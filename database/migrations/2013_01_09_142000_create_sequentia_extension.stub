@@ -1,0 +1,389 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Support\Facades\DB;
+use Tpetry\PostgresqlEnhanced\Schema\Blueprint;
+use Tpetry\PostgresqlEnhanced\Support\Facades\Schema;
+use Jaulz\Sequentia\Sequentia;
+
+return new class extends Migration {
+  /**
+   * Run the migrations.
+   *
+   * @return void
+   */
+  public function up()
+  {
+    DB::transaction(function () {
+      DB::statement('CREATE SCHEMA IF NOT EXISTS ' . Sequentia::$schema);
+
+      // Create utility functions
+      Schema::createFunctionOrReplace(
+        name: Sequentia::$schema . '.get_record_value',
+        parameters: [
+          'p_element' => 'anyelement',
+          'p_key' => 'text',
+        ],
+        return: 'text',
+        body: sprintf(
+          <<<PLPGSQL
+BEGIN
+  RETURN row_to_json(p_element) ->> p_key;
+END;
+PLPGSQL
+        ),
+        language: 'PLPGSQL'
+      );
+
+      Schema::createFunctionOrReplace(
+        name: Sequentia::$schema . '.create',
+        parameters: [
+          'p_table_schema' => 'text',
+          'p_table_name' => 'text',
+          'p_target_name' => 'text',
+          'p_group_by' => "text[] DEFAULT '{}'::text[]",
+        ],
+        return: 'void',
+        body: sprintf(
+          <<<PLPGSQL
+  BEGIN
+    INSERT INTO %1\$s.definitions 
+        (table_schema, table_name, target_name, group_by) 
+      VALUES 
+        (p_table_schema, p_table_name, p_target_name, p_group_by);
+  END;
+PLPGSQL
+          ,
+          Sequentia::$schema
+        ),
+        language: 'PLPGSQL'
+      );
+
+      // Create tables
+      Schema::create(Sequentia::$schema . '.definitions', function (
+        Blueprint $table
+      ) {
+        $table->id()->generatedAs();
+
+        $table->text('table_schema');
+        $table->text('table_name');
+        $table->text('target_name')->default('sequence');
+        $table->raw('text[]', 'group_by')->default(DB::raw("'{}'::text[]"));
+        $table->unsignedBigInteger('initial_value')->default(1);
+
+        $table->unique(['table_schema', 'table_name', 'target_name']);
+      });
+
+      Schema::create(Sequentia::$schema . '.sequences', function (Blueprint $table) {
+        $table->id()->generatedAs();
+
+        $table->unsignedBigInteger('definition_id');
+        $table
+          ->foreign('definition_id')
+          ->references('id')
+          ->on(Sequentia::$schema . '.definitions')
+          ->cascadeOnDelete();
+
+        $table->raw('text[]', 'grouped_by')->default(DB::raw("'{}'::text[]"));
+
+        $table->unsignedBigInteger('next_value');
+
+        $table->unique(['definition_id', 'grouped_by']);
+      });
+
+      // Create trigger functions
+      Schema::createFunctionOrReplace(
+        name: Sequentia::$schema . '.definitions__before',
+        parameters: [],
+        return: 'trigger',
+        body: sprintf(
+          <<<PLPGSQL
+  BEGIN
+    -- Prevent updates
+    IF TG_OP = 'UPDATE' THEN
+      NEW.table_schema = OLD.table_schema;
+      NEW.table_name = OLD.table_name;
+      NEW.target_name = OLD.target_name;
+      NEW.group_by = OLD.group_by;
+    END IF;
+
+    RETURN NEW;
+  END;
+PLPGSQL
+          ,
+          Sequentia::$schema
+        ),
+        language: 'PLPGSQL'
+      );
+
+      Schema::createFunctionOrReplace(
+        name: Sequentia::$schema . '.definitions__after',
+        parameters: [],
+        return: 'trigger',
+        body: sprintf(
+          <<<PLPGSQL
+DECLARE
+  trigger_name text;
+  index_name text;
+  index_column_names text;
+  id int;
+BEGIN
+  -- Log
+  RAISE DEBUG '
+    %1\$s.definition__before: start (
+      TG_NAME=%%, 
+      TG_OP=%%, 
+      TG_TABLE_NAME=%%, 
+      OLD=%%, 
+      NEW=%%, 
+      TG_ARGV=%%
+    )', 
+    TG_NAME, 
+    TG_OP, 
+    TG_TABLE_NAME, 
+    OLD::text, 
+    NEW::text, 
+    TG_ARGV::text;
+
+  -- Determine trigger and sequence name
+  id = CASE WHEN TG_OP = 'DELETE' THEN OLD.id ELSE NEW.id END;
+  trigger_name = format('9999_sequentia_%%s__before', id);
+  index_name = format('%%s_%%s_sequentia_%%s', NEW.table_name, NEW.target_name, id);
+
+  IF TG_OP = 'DELETE' THEN
+    -- Drop trigger
+    EXECUTE format('
+      DROP TRIGGER IF EXISTS %%I ON %%I.%%I
+    ', trigger_name, OLD.table_schema, OLD.table_name);
+
+    -- Drop column
+    EXECUTE format(
+      'ALTER TABLE %%I.%%I DROP COLUMN IF EXISTS %%I', 
+      OLD.table_schema,
+      OLD.table_name,
+      OLD.target_name
+    );
+
+    RETURN OLD;
+  END IF;
+
+  -- Create column
+  EXECUTE format(
+    'ALTER TABLE %%I.%%I ADD COLUMN IF NOT EXISTS %%I bigint', 
+    NEW.table_schema,
+    NEW.table_name,
+    NEW.target_name
+  );
+
+  -- Create trigger
+  EXECUTE format('
+    CREATE TRIGGER %%I
+      BEFORE INSERT OR UPDATE OR DELETE
+      ON %%I.%%I
+      FOR EACH ROW 
+      EXECUTE FUNCTION %1\$s.sequentia__before(%%L)
+    ', trigger_name, NEW.table_schema, NEW.table_name, NEW.id);
+
+  -- Alter column to non-nullable
+  -- EXECUTE format(
+  --  'ALTER TABLE %%I.%%I ALTER COLUMN %%I SET NOT NULL', 
+  --   NEW.table_schema,
+  --   NEW.table_name,
+  --   NEW.target_name
+  -- );
+
+  -- Create index
+  SELECT 
+    array_to_string(
+      array_agg(format('%%I', column_name)),
+      ','
+    ) 
+  FROM 
+    unnest(array_append(NEW.group_by, NEW.target_name)) AS column_name
+  INTO index_column_names;
+
+  EXECUTE format('
+    CREATE UNIQUE INDEX %%I
+      ON %%I.%%I(%%s)
+    ', index_name, NEW.table_schema, NEW.table_name, index_column_names);
+
+  RETURN NEW;
+END;
+PLPGSQL
+          ,
+          Sequentia::$schema
+        ),
+        language: 'PLPGSQL'
+      );
+
+      Schema::createFunctionOrReplace(
+        name: Sequentia::$schema . '.sequentia__before',
+        parameters: [],
+        return: 'trigger',
+        body: sprintf(
+          <<<PLPGSQL
+DECLARE
+  definition %1\$s.definitions%%rowtype;
+  p_definition_id int;
+
+  column_name text;
+
+  old_grouped_by text[];
+  new_grouped_by text[];
+
+  next_value int;
+BEGIN
+  -- Cast definition id
+  IF TG_ARGV[0] IS NOT NULL THEN
+    p_definition_id = TG_ARGV[0]::bigint;
+  END IF;
+
+  -- Log
+  RAISE DEBUG '
+    %1\$s.sequentia__before: start (
+      TG_NAME=%%, 
+      TG_OP=%%, 
+      TG_TABLESCHEMA=%%, 
+      TG_TABLE_NAME=%%, 
+      OLD=%%, 
+      NEW=%%, 
+      TG_ARGV=%%
+    )', 
+    TG_NAME, 
+    TG_OP, 
+    TG_TABLE_SCHEMA,
+    TG_TABLE_NAME, 
+    OLD::text, 
+    NEW::text, 
+    TG_ARGV::text;
+
+  -- Nothing to do yet
+  IF TG_OP = 'DELETE' THEN
+    RETURN OLD;
+  END IF;
+
+  -- Try to find definition
+  SELECT * FROM %1\$s.definitions 
+    WHERE
+        id = p_definition_id
+      AND
+        table_schema = TG_TABLE_SCHEMA
+      AND
+        table_name = TG_TABLE_NAME
+    INTO definition;
+  
+  IF definition IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  RAISE DEBUG '%1\$s.sequentia__before: definition (definition_id=%%, table_schema=%%, table_name=%%, target_name=%%, group_by=%%)', 
+    definition.id, 
+    definition.table_schema, 
+    definition.table_name, 
+    definition.target_name, 
+    definition.group_by;
+    
+  -- Collect old group values
+  IF cardinality(definition.group_by) > 0 THEN
+    FOREACH column_name IN ARRAY definition.group_by
+    LOOP
+      old_grouped_by = array_append(old_grouped_by, format('%%L', %1\$s.get_record_value(OLD, column_name)));
+    END LOOP;
+  ELSE
+    old_grouped_by = '{}'::text[];
+  END IF;
+    
+  -- Collect new group values
+  IF cardinality(definition.group_by) > 0 THEN
+    FOREACH column_name IN ARRAY definition.group_by
+    LOOP
+      new_grouped_by = array_append(new_grouped_by, format('%%L', %1\$s.get_record_value(NEW, column_name)));
+    END LOOP;
+  ELSE
+    new_grouped_by = '{}'::text[];
+  END IF;
+
+  -- Prevent update of sequence if the values
+  IF TG_OP = 'UPDATE' AND old_grouped_by = new_grouped_by THEN
+    NEW := NEW #= hstore(definition.target_name, %1\$s.get_record_value(OLD, definition.target_name)::text);
+
+    RETURN NEW;
+  END IF;
+
+  -- Get next value
+  EXECUTE 'SELECT next_value FROM %1\$s.sequences WHERE sequences.grouped_by = $1'
+    INTO next_value
+    USING new_grouped_by;
+  IF next_value IS NOT NULL THEN
+    EXECUTE format('
+        UPDATE %1\$s.sequences 
+          SET 
+            next_value = next_value + 1 
+          WHERE 
+              definition_id = %%L
+            AND 
+              grouped_by = $1
+      ', definition.id)
+      USING new_grouped_by;
+  ELSE
+    EXECUTE format('
+      INSERT INTO %1\$s.sequences 
+          (definition_id, grouped_by, next_value) 
+        VALUES
+          (%%L, $1, %%s + 1)
+    ', definition.id, definition.initial_value)
+    USING new_grouped_by;
+    next_value = definition.initial_value;
+  END IF;
+
+  -- Assign next value
+  NEW := NEW #= hstore(definition.target_name, next_value::text);
+
+  RETURN NEW;
+END;
+PLPGSQL
+          ,
+          Sequentia::$schema
+        ),
+        language: 'PLPGSQL'
+      );
+
+      // Create triggers
+      DB::statement(
+        sprintf(
+          <<<PLPGSQL
+CREATE TRIGGER "100_prepare_before"
+  BEFORE INSERT OR UPDATE OR DELETE ON %1\$s.definitions
+  FOR EACH ROW 
+  EXECUTE FUNCTION %1\$s.definitions__before();
+PLPGSQL
+          ,
+          Sequentia::$schema
+        )
+      );
+
+      DB::statement(
+        sprintf(
+          <<<PLPGSQL
+  CREATE TRIGGER "100_create_artifacts_after"
+    AFTER INSERT OR UPDATE OR DELETE ON %1\$s.definitions
+    FOR EACH ROW 
+    EXECUTE FUNCTION %1\$s.definitions__after();
+PLPGSQL
+          ,
+          Sequentia::$schema
+        )
+      );
+    });
+  }
+
+  /**
+   * Reverse the migrations.
+   *
+   * @return void
+   */
+  public function down()
+  {
+    DB::statement('DROP SCHEMA IF EXISTS ' . Limax::$schema . ' CASCADE;');
+  }
+};
