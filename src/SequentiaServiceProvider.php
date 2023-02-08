@@ -28,7 +28,7 @@ class SequentiaServiceProvider extends PackageServiceProvider
         $package
             ->name('sequentia')
             ->hasConfigFile('sequentia')
-            ->hasMigration('2013_01_09_142000_create_sequentia_extension')
+            ->hasMigration('create_sequentia_extension')
             ->hasInstallCommand(function(InstallCommand $command) {
                 $command
                     ->publishMigrations()

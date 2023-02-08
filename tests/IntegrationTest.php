@@ -10,7 +10,7 @@ use Tpetry\PostgresqlEnhanced\Support\Facades\Schema;
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
-    $migration = include __DIR__ . '/../database/migrations/2013_01_09_142000_create_sequentia_extension.php.stub';
+    $migration = include __DIR__ . '/../database/migrations/create_sequentia_extension.php.stub';
     $migration->up();
 });
 
