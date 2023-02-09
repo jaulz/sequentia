@@ -4,5 +4,7 @@ namespace Jaulz\Sequentia;
 
 class Sequentia
 {
-  public static string $schema = 'sequentia';
+  public function getSchema() {
+    return 'sequentia';
+  }
 }

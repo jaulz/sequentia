@@ -4,7 +4,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
 use Tpetry\PostgresqlEnhanced\Schema\Blueprint;
 use Tpetry\PostgresqlEnhanced\Support\Facades\Schema;
-use Jaulz\Sequentia\Sequentia;
+use Jaulz\Sequentia\Facades\Sequentia;
 
 return new class extends Migration {
   /**
@@ -15,7 +15,7 @@ return new class extends Migration {
   public function up()
   {
     DB::transaction(function () {
-      DB::statement('CREATE SCHEMA IF NOT EXISTS ' . Sequentia::$schema);
+      DB::statement('CREATE SCHEMA IF NOT EXISTS ' . Sequentia::getSchema());
 
       // Create artifacts 
       $this->createTypes();
@@ -34,16 +34,16 @@ return new class extends Migration {
    */
   public function down()
   {
-    DB::statement('DROP SCHEMA IF EXISTS ' . Sequentia::$schema . ' CASCADE;');
+    DB::statement('DROP SCHEMA IF EXISTS ' . Sequentia::getSchema() . ' CASCADE;');
   }
 
   protected function createTypes() {
-      Schema::createDomain(Sequentia::$schema . '.column_names', 'text[]');
+      Schema::createDomain(Sequentia::getSchema() . '.column_names', 'text[]');
   }
 
   protected function createUtilityFunctions() {
       Schema::createFunctionOrReplace(
-        name: Sequentia::$schema . '.get_record_value',
+        name: Sequentia::getSchema() . '.get_record_value',
         parameters: [
           'p_element' => 'anyelement',
           'p_key' => 'text',
@@ -62,7 +62,7 @@ PLPGSQL
 
   protected function createFunctions() {
       Schema::createFunctionOrReplace(
-        name: Sequentia::$schema . '.create',
+        name: Sequentia::getSchema() . '.create',
         parameters: [
           'p_table_schema' => 'text',
           'p_table_name' => 'text',
@@ -80,14 +80,14 @@ PLPGSQL
   END;
 PLPGSQL
           ,
-          Sequentia::$schema
+          Sequentia::getSchema()
         ),
         language: 'PLPGSQL'
       );
   }
 
   protected function createTables() {
-      Schema::create(Sequentia::$schema . '.definitions', function (
+      Schema::create(Sequentia::getSchema() . '.definitions', function (
         Blueprint $table
       ) {
         $table->id()->generatedAs();
@@ -95,23 +95,23 @@ PLPGSQL
         $table->text('table_schema');
         $table->text('table_name');
         $table->text('target_name')->default('sequence');
-        $table->domain('group_by', Sequentia::$schema . '.column_names')->default(DB::raw("'{}'::text[]"));
+        $table->domain('group_by', Sequentia::getSchema() . '.column_names')->default(DB::raw("'{}'::text[]"));
         $table->unsignedBigInteger('initial_value')->default(1);
 
         $table->unique(['table_schema', 'table_name', 'target_name']);
       });
 
-      Schema::create(Sequentia::$schema . '.sequences', function (Blueprint $table) {
+      Schema::create(Sequentia::getSchema() . '.sequences', function (Blueprint $table) {
         $table->id()->generatedAs();
 
         $table->unsignedBigInteger('definition_id');
         $table
           ->foreign('definition_id')
           ->references('id')
-          ->on(Sequentia::$schema . '.definitions')
+          ->on(Sequentia::getSchema() . '.definitions')
           ->cascadeOnDelete();
 
-        $table->domain('grouped_by', Sequentia::$schema . '.column_names')->default(DB::raw("'{}'::text[]"));
+        $table->domain('grouped_by', Sequentia::getSchema() . '.column_names')->default(DB::raw("'{}'::text[]"));
         $table->unsignedBigInteger('next_value');
 
         $table->unique(['definition_id', 'grouped_by']);
@@ -120,7 +120,7 @@ PLPGSQL
 
   protected function createTriggerFunctions() {
       Schema::createFunctionOrReplace(
-        name: Sequentia::$schema . '.definitions__before',
+        name: Sequentia::getSchema() . '.definitions__before',
         parameters: [],
         return: 'trigger',
         body: sprintf(
@@ -138,13 +138,13 @@ PLPGSQL
   END;
 PLPGSQL
           ,
-          Sequentia::$schema
+          Sequentia::getSchema()
         ),
         language: 'PLPGSQL'
       );
 
       Schema::createFunctionOrReplace(
-        name: Sequentia::$schema . '.definitions__after',
+        name: Sequentia::getSchema() . '.definitions__after',
         parameters: [],
         return: 'trigger',
         body: sprintf(
@@ -238,13 +238,13 @@ BEGIN
 END;
 PLPGSQL
           ,
-          Sequentia::$schema
+          Sequentia::getSchema()
         ),
         language: 'PLPGSQL'
       );
 
       Schema::createFunctionOrReplace(
-        name: Sequentia::$schema . '.sequentia__before',
+        name: Sequentia::getSchema() . '.sequentia__before',
         parameters: [],
         return: 'trigger',
         body: sprintf(
@@ -370,7 +370,7 @@ BEGIN
 END;
 PLPGSQL
           ,
-          Sequentia::$schema
+          Sequentia::getSchema()
         ),
         language: 'PLPGSQL'
       );
@@ -386,7 +386,7 @@ CREATE TRIGGER "100_prepare_before"
   EXECUTE FUNCTION %1\$s.definitions__before();
 PLPGSQL
           ,
-          Sequentia::$schema
+          Sequentia::getSchema()
         )
       );
 
@@ -399,7 +399,7 @@ PLPGSQL
     EXECUTE FUNCTION %1\$s.definitions__after();
 PLPGSQL
           ,
-          Sequentia::$schema
+          Sequentia::getSchema()
         )
       );
   }
