@@ -47,7 +47,7 @@ test('respects groups', function () {
         $table->sequentia('category_sequence', ['category_id']);
     });
 
-    collect([null,null,null,null])->keys()->each(function($index) {
+    for ($index = 0; $index < 100; $index++) {
         $categoryId = $index % 2;
         $post = DB::table('posts')->insertReturning([
             'title' => 'test',
@@ -56,5 +56,5 @@ test('respects groups', function () {
 
         expect($post->sequence)->toBe($index + 1);
         expect($post->category_sequence)->toBe(intdiv($index, 2) + 1);
-    });
+    }
 });
