@@ -17,7 +17,31 @@ return new class extends Migration {
     DB::transaction(function () {
       DB::statement('CREATE SCHEMA IF NOT EXISTS ' . Sequentia::$schema);
 
-      // Create utility functions
+      // Create artifacts 
+      $this->createTypes();
+      $this->createUtilityFunctions();
+      $this->createFunctions();
+      $this->createTables();
+      $this->createTriggerFunctions();
+      $this->createTriggers();
+    });
+  }
+
+  /**
+   * Reverse the migrations.
+   *
+   * @return void
+   */
+  public function down()
+  {
+    DB::statement('DROP SCHEMA IF EXISTS ' . Sequentia::$schema . ' CASCADE;');
+  }
+
+  protected function createTypes() {
+      Schema::createDomain(Sequentia::$schema . '.column_names', 'text[]');
+  }
+
+  protected function createUtilityFunctions() {
       Schema::createFunctionOrReplace(
         name: Sequentia::$schema . '.get_record_value',
         parameters: [
@@ -34,7 +58,9 @@ PLPGSQL
         ),
         language: 'PLPGSQL'
       );
+  }
 
+  protected function createFunctions() {
       Schema::createFunctionOrReplace(
         name: Sequentia::$schema . '.create',
         parameters: [
@@ -58,8 +84,9 @@ PLPGSQL
         ),
         language: 'PLPGSQL'
       );
+  }
 
-      // Create tables
+  protected function createTables() {
       Schema::create(Sequentia::$schema . '.definitions', function (
         Blueprint $table
       ) {
@@ -68,7 +95,7 @@ PLPGSQL
         $table->text('table_schema');
         $table->text('table_name');
         $table->text('target_name')->default('sequence');
-        $table->raw('text[]', 'group_by')->default(DB::raw("'{}'::text[]"));
+        $table->domain('group_by', Sequentia::$schema . '.column_names')->default(DB::raw("'{}'::text[]"));
         $table->unsignedBigInteger('initial_value')->default(1);
 
         $table->unique(['table_schema', 'table_name', 'target_name']);
@@ -84,14 +111,14 @@ PLPGSQL
           ->on(Sequentia::$schema . '.definitions')
           ->cascadeOnDelete();
 
-        $table->raw('text[]', 'grouped_by')->default(DB::raw("'{}'::text[]"));
-
+        $table->domain('grouped_by', Sequentia::$schema . '.column_names')->default(DB::raw("'{}'::text[]"));
         $table->unsignedBigInteger('next_value');
 
         $table->unique(['definition_id', 'grouped_by']);
       });
+  }
 
-      // Create trigger functions
+  protected function createTriggerFunctions() {
       Schema::createFunctionOrReplace(
         name: Sequentia::$schema . '.definitions__before',
         parameters: [],
@@ -285,7 +312,7 @@ BEGIN
     
   -- Collect old group values
   IF cardinality(definition.group_by) > 0 THEN
-    FOREACH column_name IN ARRAY definition.group_by
+    FOREACH column_name IN ARRAY definition.group_by::text[]
     LOOP
       old_grouped_by = array_append(old_grouped_by, format('%%L', %1\$s.get_record_value(OLD, column_name)));
     END LOOP;
@@ -295,7 +322,7 @@ BEGIN
     
   -- Collect new group values
   IF cardinality(definition.group_by) > 0 THEN
-    FOREACH column_name IN ARRAY definition.group_by
+    FOREACH column_name IN ARRAY definition.group_by::text[]
     LOOP
       new_grouped_by = array_append(new_grouped_by, format('%%L', %1\$s.get_record_value(NEW, column_name)));
     END LOOP;
@@ -347,8 +374,9 @@ PLPGSQL
         ),
         language: 'PLPGSQL'
       );
+  }
 
-      // Create triggers
+  protected function createTriggers() {
       DB::statement(
         sprintf(
           <<<PLPGSQL
@@ -374,16 +402,5 @@ PLPGSQL
           Sequentia::$schema
         )
       );
-    });
-  }
-
-  /**
-   * Reverse the migrations.
-   *
-   * @return void
-   */
-  public function down()
-  {
-    DB::statement('DROP SCHEMA IF EXISTS ' . Limax::$schema . ' CASCADE;');
   }
 };

@@ -10,70 +10,20 @@ use Tpetry\PostgresqlEnhanced\Support\Facades\Schema;
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
+    DB::statement('CREATE EXTENSION IF NOT EXISTS hstore');
+
     $migration = include __DIR__ . '/../database/migrations/create_sequentia_extension.php.stub';
     $migration->up();
 });
 
-test('creates correct slugs', function () {
+test('increments sequence', function () {
     Schema::create('posts', function (Blueprint $table) {
         $table->id();
         $table->text('title');
     });
 
     Schema::table('posts', function (Blueprint $table) {
-        $table->sequentia('slug', 'title');
-    });
-
-    collect([
-        'test' => 'test',
-        'Test-Story-4' => 'test-story-4',
-        'äöü' => 'aeoeue',
-        'èô' => 'eo'
-    ])->each(function ($key, $value) {
-        $post = DB::table('posts')->insertReturning([
-            'title' => $value
-        ])->first();
-
-        expect($post->slug)->toBe($key);
-    });
-});
-
-test('updates correct slugs', function () {
-    Schema::create('posts', function (Blueprint $table) {
-        $table->id();
-        $table->text('title');
-    });
-
-    Schema::table('posts', function (Blueprint $table) {
-        $table->sequentia('slug', 'title');
-    });
-
-    collect([
-        'test' => 'test',
-        'Test-Story-4' => 'test-story-4',
-        'äöü' => 'aeoeue',
-        'èô' => 'eo'
-    ])->each(function ($key, $value) {
-         DB::table('posts')->insert([
-            'title' => '---'
-        ]);
-
-        $post = DB::table('posts')->updateReturning([
-            'title' => $value
-        ])->first();
-
-        expect($post->slug)->toBe($key);
-    });
-});
-
-test('increments suffix when same slug is used multiple times', function () {
-    Schema::create('posts', function (Blueprint $table) {
-        $table->id();
-        $table->text('title');
-    });
-
-    Schema::table('posts', function (Blueprint $table) {
-        $table->sequentia('slug', 'title');
+        $table->sequentia('sequence');
     });
 
     collect([null,null,null,null])->keys()->each(function($index) {
@@ -81,43 +31,30 @@ test('increments suffix when same slug is used multiple times', function () {
             'title' => 'test'
         ])->first();
 
-        $suffix = $index > 0 ? '_' . ($index + 1) : '';
-        expect($post->slug)->toBe('test' . $suffix);
+        expect($post->sequence)->toBe($index + 1);
     });
 });
 
-test('remembers slugs once assigned', function () {
+test('respects groups', function () {
     Schema::create('posts', function (Blueprint $table) {
         $table->id();
+        $table->integer('category_id');
         $table->text('title');
     });
 
     Schema::table('posts', function (Blueprint $table) {
-        $table->sequentia('slug', 'title');
+        $table->sequentia('sequence');
+        $table->sequentia('category_sequence', ['category_id']);
     });
 
-    $initialTitle = 'test';
-    $initialSlug = 'test';
+    collect([null,null,null,null])->keys()->each(function($index) {
+        $categoryId = $index % 2;
+        $post = DB::table('posts')->insertReturning([
+            'title' => 'test',
+            'category_id' => $categoryId,
+        ])->first();
 
-    $initialPost = DB::table('posts')->insertReturning([
-        'title' => $initialTitle
-    ])->first();
-    expect($initialPost->slug)->toBe($initialSlug);
-
-    $initialPost = DB::table('posts')->updateReturning([
-        'title' => 'not a test anymore'
-    ])->first();
-    expect($initialPost->slug)->toBe('not-a-test-anymore');
-
-    $secondPost = DB::table('posts')->insertReturning([
-        'title' => 'test'
-    ])->first();
-    expect($secondPost->slug)->toBe('test_2');
-
-    $initialPost = DB::table('posts')->where([
-        'id' => $initialPost->id,
-    ])->updateReturning([
-        'title' => 'test'
-    ])->first();
-    expect($initialPost->slug)->toBe('test');
+        expect($post->sequence)->toBe($index + 1);
+        expect($post->category_sequence)->toBe(intdiv($index, 2) + 1);
+    });
 });
