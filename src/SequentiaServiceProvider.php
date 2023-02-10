@@ -49,8 +49,7 @@ class SequentiaServiceProvider extends PackageServiceProvider
         /** @var \Illuminate\Database\Schema\Blueprint $this */
         $prefix = $this->prefix;
         $tableName = $this->table;
-        $targetName = $targetName;
-        $schema = $schema ?? config('sequentia.schema') ?? 'public';
+        $schema = $schema ?? config('sequentia.table_schema') ?? 'public';
   
         $command = $this->addCommand(
           'sequentia',
